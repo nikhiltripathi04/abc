@@ -67,9 +67,56 @@ async function getCurrentUser(userId) {
 	return { status: 200, body: { success: true, data: user } };
 }
 
-async function login({ username, password, expectedRole }) {
+async function login(payload = {}) {
 	try {
-		let query = User.findOne({ username }).select('+password');
+		let body = {};
+		if (payload && typeof payload === 'object') {
+			if (
+				payload.body &&
+				typeof payload.body === 'object' &&
+				payload.username === undefined &&
+				payload.email === undefined &&
+				payload.password === undefined
+			) {
+				body = payload.body;
+			} else {
+				body = payload;
+			}
+		} else if (typeof payload === 'string') {
+			try {
+				body = JSON.parse(payload);
+			} catch (error) {
+				body = {};
+			}
+		}
+
+		const queryParams = (payload && typeof payload === 'object' && payload.query && typeof payload.query === 'object')
+			? payload.query
+			: {};
+		const nested = (body.data && typeof body.data === 'object')
+			? body.data
+			: (body.user && typeof body.user === 'object' ? body.user : {});
+
+		const pick = (...keys) => {
+			for (const key of keys) {
+				if (body[key] !== undefined && body[key] !== null) return body[key];
+				if (nested[key] !== undefined && nested[key] !== null) return nested[key];
+				if (queryParams[key] !== undefined && queryParams[key] !== null) return queryParams[key];
+			}
+			return undefined;
+		};
+
+		const rawIdentifier = pick('username', 'email', 'userName', 'identifier', 'login', 'user');
+		const password = pick('password', 'pass', 'pwd', 'Password');
+		const expectedRole = pick('expectedRole', 'role');
+		const loginInput = String(rawIdentifier || '').trim().toLowerCase();
+		if (!loginInput || !password) {
+			return { status: 400, body: { success: false, message: 'Username/email and password are required' } };
+		}
+
+		let query = User.findOne({
+			$or: [{ username: loginInput }, { email: loginInput }],
+		}).select('+password');
 		const SiteModel = safeGetModel('Site');
 		const WarehouseModel = safeGetModel('Warehouse');
 		if (SiteModel) query = query.populate('sites', 'siteName location');
@@ -164,11 +211,11 @@ async function refreshToken(refreshTokenValue) {
 	return { status: 200, body: { accessToken: createAccessToken(user) } };
 }
 
-async function createSupervisor(req, { username, password, adminId, fullName }) {
-	if (!username || !password || !adminId) {
+async function createSupervisor(req, { username, password, adminId, firstName, lastName }) {
+	if (!username || !password || !adminId || !firstName || !lastName) {
 		return {
 			status: 400,
-			body: { success: false, message: 'Username, password, and adminId are required' },
+			body: { success: false, message: 'Username, password, adminId, first name, and last name are required' },
 		};
 	}
 
@@ -186,14 +233,15 @@ async function createSupervisor(req, { username, password, adminId, fullName }) 
 		return { status: 400, body: { success: false, message: 'Username already exists' } };
 	}
 
-	const normalizedName = splitFullName(fullName || '');
+	const supervisorFirstName = String(firstName).trim();
+	const supervisorLastName = String(lastName).trim();
 	const supervisor = new User({
 		username: normalizedUsername,
 		password,
 		role: 'supervisor',
-		firstName: normalizedName.firstName,
-		lastName: normalizedName.lastName,
-		fullName: normalizedName.fullName,
+		firstName: supervisorFirstName,
+		lastName: supervisorLastName,
+		fullName: `${supervisorFirstName} ${supervisorLastName}`,
 		createdBy: adminId,
 		companyId: admin.companyId || admin._id,
 		company: admin.companyId || admin._id,
@@ -259,11 +307,11 @@ async function getSupervisorById(supervisorId) {
 	return { status: 200, body: { success: true, data: supervisor } };
 }
 
-async function createWarehouseManager(req, { username, password, adminId, fullName }) {
-	if (!username || !password || !adminId) {
+async function createWarehouseManager(req, { username, password, adminId, firstName, lastName }) {
+	if (!username || !password || !adminId || !firstName || !lastName) {
 		return {
 			status: 400,
-			body: { success: false, message: 'Username, password, and adminId are required' },
+			body: { success: false, message: 'Username, password, adminId, first name, and last name are required' },
 		};
 	}
 
@@ -281,14 +329,15 @@ async function createWarehouseManager(req, { username, password, adminId, fullNa
 		return { status: 400, body: { success: false, message: 'Username already exists' } };
 	}
 
-	const normalizedNameWM = splitFullName(fullName || '');
+	const managerFirstName = String(firstName).trim();
+	const managerLastName = String(lastName).trim();
 	const warehouseManager = new User({
 		username: normalizedUsername,
 		password,
 		role: 'warehouse_manager',
-		firstName: normalizedNameWM.firstName,
-		lastName: normalizedNameWM.lastName,
-		fullName: normalizedNameWM.fullName,
+		firstName: managerFirstName,
+		lastName: managerLastName,
+		fullName: `${managerFirstName} ${managerLastName}`,
 		createdBy: adminId,
 		companyId: admin.companyId || admin._id,
 		company: admin.companyId || admin._id,
@@ -406,62 +455,11 @@ async function getAdmins(adminId) {
 	return { status: 200, body: { success: true, count: admins.length, data: admins } };
 }
 
-async function registerAdmin({ username, password, email, phoneNumber, firmName, jobTitle }) {
-	if (!username || !password || !email || !phoneNumber) {
-		return {
-			status: 400,
-			body: {
-				success: false,
-				message: 'Please provide username, password, email, and phone number',
-			},
-		};
-	}
+const companyService = require('../company/company.service');
 
-	const existingUsername = await User.findOne({ username });
-	if (existingUsername) {
-		return {
-			status: 400,
-			body: { success: false, message: 'Username already exists', errorType: 'USERNAME_EXISTS' },
-		};
-	}
-
-	const existingEmail = await User.findOne({ email });
-	if (existingEmail) {
-		return {
-			status: 400,
-			body: { success: false, message: 'Email already exists', errorType: 'EMAIL_EXISTS' },
-		};
-	}
-
-	const user = new User({
-		username,
-		password,
-		email,
-		phoneNumber,
-		firmName: firmName || '',
-		jobTitle: jobTitle || 'Owner',
-		role: 'company_owner',
-		firstName: 'Admin',
-		lastName: username,
-	});
-	await user.save();
-
-	// For company owners created via registration, set a companyId so downstream admin/staff creation can reference a company.
-	if (user.role === 'company_owner') {
-		// Ensure both company and companyId fields are set for compatibility across code paths
-		if (!user.company) user.company = user._id;
-		if (!user.companyId) user.companyId = user._id;
-		await user.save();
-	}
-
-	return {
-		status: 201,
-		body: {
-			success: true,
-			message: 'Admin account created successfully',
-			data: { id: user._id, username: user.username, email: user.email, role: user.role },
-		},
-	};
+async function registerAdmin(payload) {
+	// delegate to company service to register a company and owner
+	return companyService.registerCompany(payload);
 }
 
 async function verifyIdentity({ username, email, phoneNumber }) {
@@ -590,17 +588,16 @@ async function createAdmin(req, payload) {
 		username,
 		password,
 		email,
-		fullName,
 		firstName,
 		lastName,
 		phoneNumber,
 		authAdminId,
 	} = payload;
 
-	if (!username || !password || !email || !authAdminId) {
+	if (!username || !password || !email || !firstName || !lastName || !authAdminId) {
 		return {
 			status: 400,
-			body: { success: false, message: 'Username, password, email, and creator ID are required' },
+			body: { success: false, message: 'Username, password, email, first name, last name, and creator ID are required' },
 		};
 	}
 
@@ -612,25 +609,33 @@ async function createAdmin(req, payload) {
 		};
 	}
 
+	const ownerCompanyId = owner.company || owner.companyId;
+	if (!ownerCompanyId) {
+		return {
+			status: 400,
+			body: { success: false, message: 'Owner is not linked to a company' },
+		};
+	}
+
 	const existingUser = await User.findOne({ $or: [{ username }, { email }] });
 	if (existingUser) {
 		return { status: 400, body: { success: false, message: 'Username or email already exists' } };
 	}
 
-	const incomingFullName = String(fullName || '').trim() || [firstName, lastName].filter(Boolean).join(' ').trim();
-	const normalizedName = splitFullName(incomingFullName);
+	const adminFirstName = String(firstName).trim();
+	const adminLastName = String(lastName).trim();
 
 	const newAdmin = new User({
 		username,
 		password,
 		email,
-		firstName: normalizedName.firstName,
-		lastName: normalizedName.lastName,
-		fullName: normalizedName.fullName,
+		firstName: adminFirstName,
+		lastName: adminLastName,
+		fullName: `${adminFirstName} ${adminLastName}`,
 		phoneNumber: phoneNumber || '0000000000',
 		role: 'admin',
-		companyId: owner._id,
-		company: owner._id,
+		companyId: ownerCompanyId,
+		company: ownerCompanyId,
 		createdBy: owner._id,
 	});
 	await newAdmin.save();
@@ -642,7 +647,7 @@ async function createAdmin(req, payload) {
 
 	const emailSubject = 'Welcome to ConERP - Admin Account Created';
 	const emailHtml = `
-			<h1>Welcome to ConERP, ${normalizedName.fullName || normalizedName.firstName}!</h1>
+			<h1>Welcome to ConERP, ${adminFirstName} ${adminLastName}!</h1>
 			<p>Your admin account has been successfully created.</p>
 			<p><strong>Username:</strong> ${username}</p>
 			<p><strong>Password:</strong> ${password}</p>
@@ -753,8 +758,8 @@ module.exports = {
 	resetPassword,
 	deleteSupervisor,
 	resetSupervisorPassword,
-	createAdmin,
-	getCompanyAdmins,
-	deleteCompanyAdmin,
+	createAdmin: (req, payload) => companyService.createAdmin(req, payload),
+	getCompanyAdmins: (ownerId) => companyService.getCompanyAdmins(ownerId),
+	deleteCompanyAdmin: (req, opts) => companyService.deleteCompanyAdmin(req, opts),
 	changePassword,
 };

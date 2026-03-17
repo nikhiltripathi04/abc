@@ -12,11 +12,13 @@ describe('Auth & user flows (integration)', function () {
 		password: 'Pass1234!',
 		email: `testadmin_${unique}@example.com`,
 		phoneNumber: '1234567890',
-		firmName: 'TestFirm',
+		firstName: 'Test',
+		lastName: 'Owner',
 		jobTitle: 'Owner',
 	};
 
 	let loggedUser = null;
+	let ownerAccessToken = null;
 	let createdAdmin = null;
 	let createdAdminId = null;
 
@@ -33,12 +35,22 @@ describe('Auth & user flows (integration)', function () {
 		expect(res.status).to.equal(200);
 		expect(res.body).to.have.property('accessToken');
 		expect(res.body).to.have.property('user');
+		ownerAccessToken = res.body.accessToken;
 		loggedUser = res.body.user;
 	});
 
 	it('creates an admin using company_owner id (create-admin)', async () => {
-		const adminPayload = { username: `admin_${unique}`, password: 'Pass1234!', email: `admin_${unique}@example.com`, authAdminId: loggedUser.id };
-		const res = await request(BASE).post('/api/auth/create-admin').send(adminPayload);
+		const adminPayload = {
+			username: `admin_${unique}`,
+			password: 'Pass1234!',
+			email: `admin_${unique}@example.com`,
+			firstName: 'Admin',
+			lastName: 'User',
+		};
+		const res = await request(BASE)
+			.post('/api/company/create-admin')
+			.set('Authorization', `Bearer ${ownerAccessToken}`)
+			.send(adminPayload);
 		console.log('CREATE-ADMIN RESPONSE:', res.status, JSON.stringify(res.body));
 		expect(res.status).to.equal(201);
 		expect(res.body).to.have.property('success', true);
@@ -49,7 +61,13 @@ describe('Auth & user flows (integration)', function () {
 	});
 
 	it('creates a supervisor using adminId', async () => {
-		const payload = { username: `sup_${unique}`, password: 'Pass1234!', adminId: createdAdminId, fullName: 'Supervisor One' };
+		const payload = {
+			username: `sup_${unique}`,
+			password: 'Pass1234!',
+			adminId: createdAdminId,
+			firstName: 'Supervisor',
+			lastName: 'One',
+		};
 		const res = await request(BASE).post('/api/auth/create-supervisor').send(payload);
 		console.log('CREATE-SUPERVISOR RESPONSE:', res.status, JSON.stringify(res.body));
 		expect([200,201]).to.include(res.status);
@@ -57,7 +75,13 @@ describe('Auth & user flows (integration)', function () {
 	});
 
 	it('creates a warehouse manager using adminId', async () => {
-		const payload = { username: `wm_${unique}`, password: 'Pass1234!', adminId: createdAdminId, fullName: 'Warehouse Manager' };
+		const payload = {
+			username: `wm_${unique}`,
+			password: 'Pass1234!',
+			adminId: createdAdminId,
+			firstName: 'Warehouse',
+			lastName: 'Manager',
+		};
 		const res = await request(BASE).post('/api/auth/create-warehouse-manager').send(payload);
 		console.log('CREATE-WM RESPONSE:', res.status, JSON.stringify(res.body));
 		expect([200,201]).to.include(res.status);

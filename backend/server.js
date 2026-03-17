@@ -16,8 +16,9 @@ console.log('🔐 JWT ENV CHECK:', {
 const app = express();
 const http = require('http');
 const socketIo = require('socket.io');
-const authRoutes = require('./modules/auth/routes');
-const userRoutes = require('./modules/users/routes');
+const authRoutes = require('./modules/auth/auth.routes');
+const userRoutes = require('./modules/users/user.routes');
+const companyRoutes = require('./modules/company/company.routes');
 const server = http.createServer(app);
 // const { setIO } = require('./core/socket');
 
@@ -74,14 +75,15 @@ app.get('/', (req, res) => {
         endpoints: {
             auth: '/api/auth',
             users: '/api/users',
+            company: '/api/company'
         }
     });
 });
 
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
+app.use('/api/company', companyRoutes);
 
-// CONNECT TO MONGODB AND START SERVER
 // CONNECT DATABASE
 connectDB();
 
@@ -96,6 +98,10 @@ server.listen(PORT, () => {
     console.log('   POST http://localhost:' + PORT + '/api/auth/login');
     console.log('   GET  http://localhost:' + PORT + '/api/auth/me');
     console.log('   POST http://localhost:' + PORT + '/api/users/save-push-token');
+    console.log('   POST http://localhost:' + PORT + '/api/company/register');
+    console.log('   POST http://localhost:' + PORT + '/api/company/create-admin');
+    console.log('   GET  http://localhost:' + PORT + '/api/company/admins');
+    console.log('   DELETE http://localhost:' + PORT + '/api/company/admins/:id');
 });
 
 

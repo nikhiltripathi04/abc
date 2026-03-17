@@ -1,4 +1,5 @@
 const authService = require('./auth.service');
+const companyService = require('../company/company.service');
 
 const handle = async (res, executor) => {
 	const result = await executor();
@@ -16,7 +17,20 @@ exports.getMe = async (req, res) => {
 
 exports.login = async (req, res) => {
 	try {
-		return await handle(res, () => authService.login(req.body));
+		let parsedBody = req.body;
+		if (typeof req.body === 'string') {
+			try {
+				parsedBody = JSON.parse(req.body);
+			} catch (error) {
+				parsedBody = {};
+			}
+		}
+
+		return await handle(res, () => authService.login({
+			...(parsedBody || {}),
+			query: req.query || {},
+			body: parsedBody,
+		}));
 	} catch (error) {
 		console.error('Login error:', error);
 		return res.status(500).json({ success: false, message: 'An error occurred during login', error: error.message });
@@ -99,7 +113,8 @@ exports.getAdmins = async (req, res) => {
 
 exports.register = async (req, res) => {
 	try {
-		return await handle(res, () => authService.registerAdmin(req.body));
+		// delegate company-registration to company service
+		return await handle(res, () => companyService.registerCompany(req.body));
 	} catch (error) {
 		console.error('Registration error:', error);
 		if (error.code === 11000) {

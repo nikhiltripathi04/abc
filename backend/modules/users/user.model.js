@@ -124,11 +124,6 @@ const userSchema = new Schema({
 		}
 	},
 
-	firmName: {
-		type: String,
-		trim: true
-	},
-
 	jobTitle: {
 		type: String,
 		required() {

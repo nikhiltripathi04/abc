@@ -17,7 +17,7 @@ const auth = async (req, res, next) => {
       // console.log('Token:', token); // Commented to avoid clutter
     }
     
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'test_jwt_secret');
     if (debugAuth) {
       console.log('Decoded Payload:', JSON.stringify(decoded));
       const now = Math.floor(Date.now() / 1000);
