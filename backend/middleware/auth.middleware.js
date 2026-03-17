@@ -1,5 +1,7 @@
 const jwt = require('jsonwebtoken');
 const User = require('../modules/users/user.model');
+const { JWT_SECRET } = require('../config/jwt.config');
+const { AuthenticationError, AuthorizationError } = require('../utils/errors');
 
 const auth = async (req, res, next) => {
   try {
@@ -7,7 +9,7 @@ const auth = async (req, res, next) => {
 
     if (!token) {
       console.log('Middleware: No token provided');
-      return res.status(401).json({ message: 'No token provided' });
+      return next(new AuthenticationError('No token provided'));
     }
 
     const debugAuth = String(process.env.DEBUG_AUTH || '').toLowerCase() === 'true'
@@ -17,7 +19,7 @@ const auth = async (req, res, next) => {
       // console.log('Token:', token); // Commented to avoid clutter
     }
     
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'test_jwt_secret');
+    const decoded = jwt.verify(token, JWT_SECRET);
     if (debugAuth) {
       console.log('Decoded Payload:', JSON.stringify(decoded));
       const now = Math.floor(Date.now() / 1000);
@@ -37,23 +39,20 @@ const auth = async (req, res, next) => {
 
     if (!user) {
       console.log('Middleware: User not found for ID:', decoded.userId);
-      return res.status(401).json({ message: 'Invalid token' });
+      return next(new AuthenticationError('Invalid token'));
     }
 
     req.user = user;
     next();
   } catch (error) {
     console.error('Middleware Error:', error.message);
-    if (error.name === 'TokenExpiredError') {
-        console.log('❌ Caught TokenExpiredError');
-    }
-    res.status(401).json({ message: 'Invalid token', error: error.message });
+    return next(error);
   }
 };
 
 const adminOnly = (req, res, next) => {
   if (req.user.role !== 'admin') {
-    return res.status(403).json({ message: 'Admin access required' });
+    return next(new AuthorizationError('Admin access required'));
   }
   next();
 };

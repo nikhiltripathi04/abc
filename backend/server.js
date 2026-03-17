@@ -1,128 +1,114 @@
 const express = require('express');
-const mongoose = require('mongoose');
 const cors = require('cors');
-const cron = require('node-cron');
+const helmet = require('helmet');
+const morgan = require('morgan');
 const connectDB = require('./config/db');
 
 if (process.env.NODE_ENV !== 'production') {
   require('dotenv').config();
 }
-console.log('🔐 JWT ENV CHECK:', {
-    NODE_ENV: process.env.NODE_ENV,
-    JWT_SECRET: process.env.JWT_SECRET,
-    JWT_REFRESH_SECRET: process.env.JWT_REFRESH_SECRET,
-});
 
-const app = express();
+const config = require('./config/env.config');
+const logger = require('./utils/logger');
+const { corsOptions } = require('./config/cors.config');
+const sanitizationMiddleware = require('./middleware/sanitization.middleware');
+const { errorHandler, notFoundHandler } = require('./middleware/error.middleware');
+const { apiLimiter } = require('./middleware/rate-limit.middleware');
+
 const http = require('http');
 const socketIo = require('socket.io');
 const authRoutes = require('./modules/auth/auth.routes');
 const userRoutes = require('./modules/users/user.routes');
 const companyRoutes = require('./modules/company/company.routes');
-const server = http.createServer(app);
-// const { setIO } = require('./core/socket');
+const createApp = () => {
+    const app = express();
+    const server = http.createServer(app);
 
-// INITIALIZE SOCKET.IO
-const io = socketIo(server, {
-    cors: {
-        origin: "*", // In production, replace with your frontend URL
-        methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]
-    }
-});
-
-// MAKE IO ACCESSIBLE TO OUR ROUTER
-app.set('io', io);
-// setIO(io);
-
-io.on('connection', (socket) => {
-    console.log('Client Connected:', socket.id);
-
-    socket.on('join', (room) => {
-        socket.join(room);
-        console.log(`Socket ${socket.id} joined room: ${room}`);
+    const io = socketIo(server, {
+        cors: {
+            origin: corsOptions.origin,
+            methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+            credentials: true,
+        },
     });
 
-    socket.on('leave', (room) => {
-        socket.leave(room);
-        console.log(`Socket ${socket.id} left room: ${room}`);
+    app.set('io', io);
+
+    io.on('connection', (socket) => {
+        logger.info('Client connected', { socketId: socket.id });
+
+        socket.on('join', (room) => socket.join(room));
+        socket.on('leave', (room) => socket.leave(room));
+        socket.on('disconnect', () => logger.info('Client disconnected', { socketId: socket.id }));
     });
 
-    socket.on('disconnect', () => {
-        console.log('Client disconnected:', socket.id);
-    });
-});
+    app.use(helmet());
+    app.use(morgan('combined', { stream: logger.stream }));
+    app.use(cors(corsOptions));
+    app.use(sanitizationMiddleware);
+    app.use(express.json({ limit: '50mb' }));
+    app.use(express.urlencoded({ limit: '50mb', extended: true }));
+    app.use('/api', apiLimiter);
 
-// MIDDLEWARE
-app.use(cors());
-app.use(express.json({ limit: '50mb' })); // Increased limit for base64 images
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
-if (String(process.env.DEBUG_REQUESTS || '').toLowerCase() === 'true'
-    || String(process.env.DEBUG_REQUESTS || '') === '1') {
-    app.use((req, res, next) => {
-        const start = Date.now();
-        res.on('finish', () => {
-            const durationMs = Date.now() - start;
-            console.log(`[REQ] ${req.method} ${req.originalUrl} -> ${res.statusCode} (${durationMs}ms)`);
+    if (String(process.env.DEBUG_REQUESTS || '').toLowerCase() === 'true'
+        || String(process.env.DEBUG_REQUESTS || '') === '1') {
+        app.use((req, res, next) => {
+            const start = Date.now();
+            res.on('finish', () => {
+                const durationMs = Date.now() - start;
+                logger.debug('Request debug', { method: req.method, path: req.originalUrl, status: res.statusCode, durationMs });
+            });
+            next();
         });
-        next();
+    }
+
+    app.get('/', (req, res) => {
+        res.json({
+            message: 'Construction Management API is running!',
+            endpoints: {
+                auth: '/api/auth',
+                users: '/api/users',
+                company: '/api/company',
+            },
+        });
+    });
+
+    app.use('/api/auth', authRoutes);
+    app.use('/api/users', userRoutes);
+    app.use('/api/company', companyRoutes);
+    app.use('*', notFoundHandler);
+    app.use(errorHandler);
+
+    return { app, server };
+};
+
+const { app, server } = createApp();
+
+let isStarted = false;
+const startServer = async () => {
+    if (isStarted) {
+        return server;
+    }
+
+    await connectDB();
+
+    await new Promise((resolve) => {
+        server.listen(config.port, () => {
+            logger.info(`Server running on port ${config.port}`);
+            logger.info(`API URL: http://localhost:${config.port}`);
+            isStarted = true;
+            resolve();
+        });
+    });
+
+    return server;
+};
+
+if (require.main === module) {
+    startServer().catch((error) => {
+        logger.error('Failed to start server', { error: error.message });
+        process.exit(1);
     });
 }
 
-// BASIC ROUTE FOR TESTING
-app.get('/', (req, res) => {
-    res.json({
-        message: 'Construction Management API is running!',
-        endpoints: {
-            auth: '/api/auth',
-            users: '/api/users',
-            company: '/api/company'
-        }
-    });
-});
-
-app.use('/api/auth', authRoutes);
-app.use('/api/users', userRoutes);
-app.use('/api/company', companyRoutes);
-
-// CONNECT DATABASE
-connectDB();
-
-// START SERVER
-const PORT = process.env.PORT || 3000;
-
-server.listen(PORT, () => {
-    console.log(`🚀 Server running on port ${PORT}`);
-    console.log(`📍 API URL: http://localhost:${PORT}`);
-    console.log('📋 Available endpoints:');
-    console.log('   GET  http://localhost:' + PORT + '/');
-    console.log('   POST http://localhost:' + PORT + '/api/auth/login');
-    console.log('   GET  http://localhost:' + PORT + '/api/auth/me');
-    console.log('   POST http://localhost:' + PORT + '/api/users/save-push-token');
-    console.log('   POST http://localhost:' + PORT + '/api/company/register');
-    console.log('   POST http://localhost:' + PORT + '/api/company/create-admin');
-    console.log('   GET  http://localhost:' + PORT + '/api/company/admins');
-    console.log('   DELETE http://localhost:' + PORT + '/api/company/admins/:id');
-});
-
-
-// Handle unhandled routes
-app.use('*', (req, res) => {
-    console.log("404 handler called for:", req.method, req.originalUrl);
-    res.status(404).json({
-        success: false,
-        message: `Route ${req.originalUrl} not found`
-    });
-});
-
-
-// Error handling middleware
-app.use((err, req, res, next) => {
-    console.error('💥 Server Error:', err.message);
-    console.error(err.stack);
-
-    res.status(500).json({
-        success: false,
-        message: 'Something went wrong!',
-        error: process.env.NODE_ENV === 'development' ? err.message : undefined
-    });
-});
+module.exports = { app, server, startServer };

@@ -25,7 +25,12 @@ exports.createAdmin = async (req, res) => {
 
 exports.getCompanyAdmins = async (req, res) => {
   try {
-    return await handle(res, () => companyService.getCompanyAdmins(req.user.id));
+    return await handle(res, () => companyService.getCompanyAdmins({
+      ownerId: req.user.id,
+      page: req.query.page,
+      limit: req.query.limit,
+      selectedFields: req.selectedFields,
+    }));
   } catch (error) {
     console.error('Error fetching company admins:', error);
     return res.status(500).json({ success: false, message: 'Failed to fetch admins' });

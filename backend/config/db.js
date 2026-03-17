@@ -1,11 +1,19 @@
 const mongoose = require('mongoose');
+const config = require('./env.config');
 
 const connectDB = async () => {
     try {
-        const mongoURI =
-            process.env.MONGODB_URI || 'mongodb://localhost:27017/construction-management';
+        const options = {
+            maxPoolSize: 10,
+            minPoolSize: 2,
+            socketTimeoutMS: 45000,
+            serverSelectionTimeoutMS: 5000,
+            family: 4,
+            retryWrites: true,
+            retryReads: true,
+        };
 
-        await mongoose.connect(mongoURI);
+        await mongoose.connect(config.mongodb.uri, options);
 
         console.log('✅ MongoDB connected successfully');
 

@@ -1,6 +1,10 @@
 const mongoose = require('mongoose');
 const User = require('../users/user.model');
 const Company = require('./company.model');
+const PaginationHelper = require('../../utils/pagination.util');
+const cacheService = require('../../services/cache.service');
+
+const resolveProjection = (defaultProjection, selectedFields) => selectedFields || defaultProjection;
 
 async function registerCompany(payload) {
 	const { username, password, email, phoneNumber, firstName, lastName, jobTitle, companyName, gstin, address } = payload;
@@ -68,6 +72,10 @@ async function registerCompany(payload) {
 
 
 const safeActivityLog = async (req, targetUserId, action, actor, metadata, message, entityType) => {
+	if (process.env.NODE_ENV === 'test' || String(process.env.DISABLE_EXTERNAL_SIDE_EFFECTS) === 'true') {
+		return;
+	}
+
 	try {
 		const ActivityLogger = require('../../../old_backend/utils/activityLogger');
 		await ActivityLogger.logActivity(targetUserId, action, actor, metadata, message, entityType);
@@ -79,6 +87,10 @@ const safeActivityLog = async (req, targetUserId, action, actor, metadata, messa
 };
 
 const safeSendEmail = async (to, subject, html) => {
+	if (process.env.NODE_ENV === 'test' || String(process.env.DISABLE_EXTERNAL_SIDE_EFFECTS) === 'true') {
+		return;
+	}
+
 	try {
 		const sendEmail = require('../../../old_backend/utils/email');
 		await sendEmail(to, subject, html);
@@ -155,6 +167,12 @@ async function createAdmin(req, payload) {
 		`;
 	safeSendEmail(email, emailSubject, emailHtml);
 
+	await Promise.all([
+		cacheService.invalidatePattern(`companyAdmins:${ownerCompanyId}:*`),
+		cacheService.invalidatePattern(`admins:company:${ownerCompanyId}:*`),
+		cacheService.del(`user:${newAdmin._id}`),
+	]);
+
 	return {
 		status: 201,
 		body: {
@@ -165,7 +183,12 @@ async function createAdmin(req, payload) {
 	};
 }
 
-async function getCompanyAdmins(ownerId) {
+async function getCompanyAdmins(params) {
+	const ownerId = (params && typeof params === 'object') ? params.ownerId : params;
+	const page = (params && typeof params === 'object') ? params.page : undefined;
+	const limit = (params && typeof params === 'object') ? params.limit : undefined;
+	const selectedFields = (params && typeof params === 'object') ? params.selectedFields : undefined;
+
 	const owner = await User.findById(ownerId);
 	if (!owner || owner.role !== 'company_owner') {
 		return { status: 403, body: { success: false, message: 'Unauthorized' } };
@@ -176,11 +199,34 @@ async function getCompanyAdmins(ownerId) {
 		return { status: 400, body: { success: false, message: 'Owner is not linked to a company' } };
 	}
 
-	const admins = await User.find({ role: 'admin', company: ownerCompanyId })
-		.select('username email fullName firstName lastName phoneNumber _id createdAt')
-		.sort({ createdAt: -1 });
+	const filter = { role: 'admin', company: ownerCompanyId };
+	const { skip, page: safePage, limit: safeLimit } = PaginationHelper.normalize({ page, limit });
+	const projection = resolveProjection('username email fullName firstName lastName phoneNumber _id createdAt', selectedFields);
+	const cacheKey = `companyAdmins:${ownerCompanyId}:p:${safePage}:l:${safeLimit}:f:${projection}`;
+	const result = await cacheService.wrap(cacheKey, async () => {
+		const [admins, total] = await Promise.all([
+			User.find(filter)
+				.select(projection)
+				.sort({ createdAt: -1 })
+				.skip(skip)
+				.limit(safeLimit)
+				.lean(),
+			User.countDocuments(filter),
+		]);
 
-	return { status: 200, body: { success: true, data: admins } };
+		return {
+			data: admins,
+			pagination: PaginationHelper.buildMeta(safePage, safeLimit, total),
+		};
+	}, 300);
+
+	return {
+		status: 200,
+		body: {
+			success: true,
+			...result,
+		},
+	};
 }
 
 async function deleteCompanyAdmin(req, { id, ownerId }) {
@@ -212,6 +258,12 @@ async function deleteCompanyAdmin(req, { id, ownerId }) {
 		deletedAdminUsername: adminToDelete.username,
 		deletedBy: ownerId,
 	}, `Admin "${adminToDelete.username}" deleted by company owner`, 'User');
+
+	await Promise.all([
+		cacheService.invalidatePattern(`companyAdmins:${ownerCompanyId}:*`),
+		cacheService.invalidatePattern(`admins:company:${ownerCompanyId}:*`),
+		cacheService.del(`user:${id}`),
+	]);
 
 	return { status: 200, body: { success: true, message: 'Admin deleted successfully' } };
 }

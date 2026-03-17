@@ -6,16 +6,15 @@ const handle = async (res, executor) => {
 	return res.status(result.status).json(result.body);
 };
 
-exports.getMe = async (req, res) => {
+exports.getMe = async (req, res, next) => {
 	try {
 		return await handle(res, () => authService.getCurrentUser(req.user.id));
 	} catch (error) {
-		console.error('GET /auth/me error:', error);
-		return res.status(500).json({ success: false, message: 'Failed to fetch user' });
+		return next(error);
 	}
 };
 
-exports.login = async (req, res) => {
+exports.login = async (req, res, next) => {
 	try {
 		let parsedBody = req.body;
 		if (typeof req.body === 'string') {
@@ -32,131 +31,123 @@ exports.login = async (req, res) => {
 			body: parsedBody,
 		}));
 	} catch (error) {
-		console.error('Login error:', error);
-		return res.status(500).json({ success: false, message: 'An error occurred during login', error: error.message });
+		return next(error);
 	}
 };
 
-exports.refreshToken = async (req, res) => {
+exports.refreshToken = async (req, res, next) => {
 	try {
 		return await handle(res, () => authService.refreshToken(req.body.refreshToken));
 	} catch (error) {
-		return res.status(401).json({ code: 'REFRESH_TOKEN_EXPIRED' });
+		return next(error);
 	}
 };
 
-exports.createSupervisor = async (req, res) => {
+exports.createSupervisor = async (req, res, next) => {
 	try {
 		return await handle(res, () => authService.createSupervisor(req, req.body));
 	} catch (error) {
-		console.error('Create supervisor error:', error);
-		return res.status(500).json({ success: false, message: 'An error occurred while creating supervisor', error: error.message });
+		return next(error);
 	}
 };
 
-exports.getSupervisors = async (req, res) => {
+exports.getSupervisors = async (req, res, next) => {
 	try {
-		return await handle(res, () => authService.getSupervisors(req.query.adminId));
+		return await handle(res, () => authService.getSupervisors({
+			...req.query,
+			selectedFields: req.selectedFields,
+		}));
 	} catch (error) {
-		console.error('Error fetching supervisors:', error);
-		return res.status(500).json({ success: false, message: 'Failed to fetch supervisors' });
+		return next(error);
 	}
 };
 
-exports.getSupervisorById = async (req, res) => {
+exports.getSupervisorById = async (req, res, next) => {
 	try {
-		return await handle(res, () => authService.getSupervisorById(req.params.id));
+		return await handle(res, () => authService.getSupervisorById(req.params.id, req.selectedFields));
 	} catch (error) {
-		console.error('GET /auth/supervisors/:id error:', error);
-		return res.status(500).json({ success: false, message: 'Failed to fetch supervisor details' });
+		return next(error);
 	}
 };
 
-exports.createWarehouseManager = async (req, res) => {
+exports.createWarehouseManager = async (req, res, next) => {
 	try {
 		return await handle(res, () => authService.createWarehouseManager(req, req.body));
 	} catch (error) {
-		console.error('Create warehouse manager error:', error);
-		return res.status(500).json({ success: false, message: 'An error occurred while creating warehouse manager', error: error.message });
+		return next(error);
 	}
 };
 
-exports.getWarehouseManagers = async (req, res) => {
+exports.getWarehouseManagers = async (req, res, next) => {
 	try {
-		return await handle(res, () => authService.getWarehouseManagers(req.query.adminId));
+		return await handle(res, () => authService.getWarehouseManagers({
+			...req.query,
+			selectedFields: req.selectedFields,
+		}));
 	} catch (error) {
-		console.error('Error fetching warehouse managers:', error);
-		return res.status(500).json({ success: false, message: 'Failed to fetch warehouse managers' });
+		return next(error);
 	}
 };
 
-exports.deleteWarehouseManager = async (req, res) => {
+exports.deleteWarehouseManager = async (req, res, next) => {
 	try {
 		return await handle(res, () => authService.deleteWarehouseManager(req, {
 			adminId: req.query.adminId,
 			managerId: req.params.managerId,
 		}));
 	} catch (error) {
-		console.error('Delete warehouse manager error:', error);
-		return res.status(500).json({ success: false, message: 'Failed to delete warehouse manager', error: error.message });
+		return next(error);
 	}
 };
 
-exports.getAdmins = async (req, res) => {
+exports.getAdmins = async (req, res, next) => {
 	try {
-		return await handle(res, () => authService.getAdmins(req.query.adminId));
+		return await handle(res, () => authService.getAdmins({
+			...req.query,
+			selectedFields: req.selectedFields,
+		}));
 	} catch (error) {
-		console.error('Error fetching admins:', error);
-		return res.status(500).json({ success: false, message: 'Failed to fetch admins' });
+		return next(error);
 	}
 };
 
-exports.register = async (req, res) => {
+exports.register = async (req, res, next) => {
 	try {
 		// delegate company-registration to company service
 		return await handle(res, () => companyService.registerCompany(req.body));
 	} catch (error) {
-		console.error('Registration error:', error);
-		if (error.code === 11000) {
-			const field = Object.keys(error.keyPattern)[0];
-			return res.status(400).json({ success: false, message: `${field.charAt(0).toUpperCase() + field.slice(1)} already exists` });
-		}
-
-		return res.status(500).json({ success: false, message: 'An error occurred during registration', error: error.message });
+		return next(error);
 	}
 };
 
-exports.verifyIdentity = async (req, res) => {
+exports.verifyIdentity = async (req, res, next) => {
 	try {
 		return await handle(res, () => authService.verifyIdentity(req.body));
 	} catch (error) {
-		console.error('Verify identity error:', error);
-		return res.status(500).json({ success: false, message: 'An error occurred during identity verification' });
+		return next(error);
 	}
 };
 
-exports.resetPassword = async (req, res) => {
+exports.resetPassword = async (req, res, next) => {
 	try {
 		return await handle(res, () => authService.resetPassword(req, req.body));
 	} catch (error) {
-		console.error('Password reset error:', error);
-		return res.status(500).json({ success: false, message: 'An error occurred during password reset' });
+		return next(error);
 	}
 };
 
-exports.deleteSupervisor = async (req, res) => {
+exports.deleteSupervisor = async (req, res, next) => {
 	try {
 		return await handle(res, () => authService.deleteSupervisor(req, {
 			id: req.params.id,
 			adminId: req.query.adminId,
 		}));
 	} catch (error) {
-		console.error('Error deleting supervisor:', error);
-		return res.status(500).json({ success: false, message: 'Failed to delete supervisor' });
+		return next(error);
 	}
 };
 
-exports.resetSupervisorPassword = async (req, res) => {
+exports.resetSupervisorPassword = async (req, res, next) => {
 	try {
 		return await handle(res, () => authService.resetSupervisorPassword(req, {
 			id: req.params.id,
@@ -164,46 +155,44 @@ exports.resetSupervisorPassword = async (req, res) => {
 			newPassword: req.body.newPassword,
 		}));
 	} catch (error) {
-		console.error('Error resetting supervisor password:', error);
-		return res.status(500).json({ success: false, message: 'Failed to reset password' });
+		return next(error);
 	}
 };
 
-exports.createAdmin = async (req, res) => {
+exports.createAdmin = async (req, res, next) => {
 	try {
 		return await handle(res, () => authService.createAdmin(req, req.body));
 	} catch (error) {
-		console.error('Create admin error:', error);
-		return res.status(500).json({ success: false, message: 'An error occurred while creating admin', error: error.message });
+		return next(error);
 	}
 };
 
-exports.getCompanyAdmins = async (req, res) => {
+exports.getCompanyAdmins = async (req, res, next) => {
 	try {
-		return await handle(res, () => authService.getCompanyAdmins(req.query.ownerId));
+		return await handle(res, () => authService.getCompanyAdmins({
+			...req.query,
+			selectedFields: req.selectedFields,
+		}));
 	} catch (error) {
-		console.error('Error fetching company admins:', error);
-		return res.status(500).json({ success: false, message: 'Failed to fetch admins' });
+		return next(error);
 	}
 };
 
-exports.deleteCompanyAdmin = async (req, res) => {
+exports.deleteCompanyAdmin = async (req, res, next) => {
 	try {
 		return await handle(res, () => authService.deleteCompanyAdmin(req, {
 			id: req.params.id,
 			ownerId: req.query.ownerId,
 		}));
 	} catch (error) {
-		console.error('Error deleting admin:', error);
-		return res.status(500).json({ success: false, message: 'Failed to delete admin' });
+		return next(error);
 	}
 };
 
-exports.changePassword = async (req, res) => {
+exports.changePassword = async (req, res, next) => {
 	try {
 		return await handle(res, () => authService.changePassword(req, req.body));
 	} catch (error) {
-		console.error('Change password error:', error);
-		return res.status(500).json({ success: false, message: 'An error occurred while changing password' });
+		return next(error);
 	}
 };

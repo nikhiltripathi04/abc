@@ -1,6 +1,14 @@
 const jwt = require('jsonwebtoken');
 const mongoose = require('mongoose');
 const User = require('../users/user.model');
+const cacheService = require('../../services/cache.service');
+const PaginationHelper = require('../../utils/pagination.util');
+const {
+	JWT_SECRET,
+	JWT_REFRESH_SECRET,
+	ACCESS_TOKEN_EXPIRES_IN,
+	REFRESH_TOKEN_EXPIRES_IN,
+} = require('../../config/jwt.config');
 
 const splitFullName = (fullName = '') => {
 	const normalized = String(fullName).trim().replace(/\s+/g, ' ');
@@ -22,6 +30,10 @@ const safeGetModel = (name) => {
 };
 
 const safeActivityLog = async (req, targetUserId, action, actor, metadata, message, entityType) => {
+	if (process.env.NODE_ENV === 'test' || String(process.env.DISABLE_EXTERNAL_SIDE_EFFECTS) === 'true') {
+		return;
+	}
+
 	try {
 		const ActivityLogger = require('../../../old_backend/utils/activityLogger');
 		await ActivityLogger.logActivity(targetUserId, action, actor, metadata, message, entityType);
@@ -33,6 +45,10 @@ const safeActivityLog = async (req, targetUserId, action, actor, metadata, messa
 };
 
 const safeSendEmail = async (to, subject, html) => {
+	if (process.env.NODE_ENV === 'test' || String(process.env.DISABLE_EXTERNAL_SIDE_EFFECTS) === 'true') {
+		return;
+	}
+
 	try {
 		const sendEmail = require('../../../old_backend/utils/email');
 		await sendEmail(to, subject, html);
@@ -43,29 +59,52 @@ const safeSendEmail = async (to, subject, html) => {
 	}
 };
 
-const JWT_SECRET = process.env.JWT_SECRET || 'test_jwt_secret';
-const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || 'test_jwt_refresh_secret';
-
 const createAccessToken = (user) => jwt.sign(
 	{ userId: user._id, role: user.role },
 	JWT_SECRET,
-	{ expiresIn: '15m' }
+	{ expiresIn: ACCESS_TOKEN_EXPIRES_IN }
 );
 
 const createRefreshToken = (user) => jwt.sign(
 	{ userId: user._id },
 	JWT_REFRESH_SECRET,
-	{ expiresIn: '60d' }
+	{ expiresIn: REFRESH_TOKEN_EXPIRES_IN }
 );
 
 async function getCurrentUser(userId) {
-	const user = await User.findById(userId).populate('sites');
+	const cacheKey = `user:${userId}`;
+	const user = await cacheService.wrap(
+		cacheKey,
+		async () => User.findById(userId).populate('sites').lean(),
+		600
+	);
+
 	if (!user) {
 		return { status: 404, body: { success: false, message: 'User not found' } };
 	}
 
 	return { status: 200, body: { success: true, data: user } };
 }
+
+const normalizeListArgs = (arg, idField) => {
+	if (arg && typeof arg === 'object' && !Array.isArray(arg)) {
+		return {
+			id: arg[idField],
+			page: arg.page,
+			limit: arg.limit,
+			selectedFields: arg.selectedFields,
+		};
+	}
+
+	return {
+		id: arg,
+		page: undefined,
+		limit: undefined,
+		selectedFields: undefined,
+	};
+};
+
+const resolveProjection = (defaultProjection, selectedFields) => selectedFields || defaultProjection;
 
 async function login(payload = {}) {
 	try {
@@ -142,19 +181,8 @@ async function login(payload = {}) {
 			return { status: 401, body: { success: false, message: 'Invalid username or password' } };
 		}
 
-		let accessToken;
-		let refreshToken;
-		try {
-			accessToken = createAccessToken(user);
-			refreshToken = createRefreshToken(user);
-		} catch (err) {
-			// Fallback for environments without JWT secrets configured (useful for local testing)
-			accessToken = 'dummy-access-token';
-			refreshToken = 'dummy-refresh-token';
-			if (String(process.env.NODE_ENV).toLowerCase() === 'production') {
-				return { status: 500, body: { success: false, message: 'Token creation failed', error: err.message } };
-			}
-		}
+		const accessToken = createAccessToken(user);
+		const refreshToken = createRefreshToken(user);
 
 		const extraData = {};
 		if (user.role === 'warehouse_manager') {
@@ -202,7 +230,7 @@ async function refreshToken(refreshTokenValue) {
 		return { status: 401, body: { message: 'Refresh token missing' } };
 	}
 
-	const decoded = jwt.verify(refreshTokenValue, process.env.JWT_REFRESH_SECRET);
+	const decoded = jwt.verify(refreshTokenValue, JWT_REFRESH_SECRET);
 	const user = await User.findById(decoded.userId);
 	if (!user) {
 		return { status: 401, body: { message: 'Invalid refresh token' } };
@@ -211,20 +239,25 @@ async function refreshToken(refreshTokenValue) {
 	return { status: 200, body: { accessToken: createAccessToken(user) } };
 }
 
-async function createSupervisor(req, { username, password, adminId, firstName, lastName }) {
-	if (!username || !password || !adminId || !firstName || !lastName) {
+async function createSupervisor(req, { username, password, firstName, lastName }) {
+	if (!username || !password || !firstName || !lastName) {
 		return {
 			status: 400,
-			body: { success: false, message: 'Username, password, adminId, first name, and last name are required' },
+			body: { success: false, message: 'Username, password, first name, and last name are required' },
 		};
 	}
 
-	const admin = await User.findOne({ _id: adminId, role: 'admin' });
+	const admin = await User.findOne({ _id: req.user?._id, role: 'admin' });
 	if (!admin) {
 		return {
 			status: 403,
 			body: { success: false, message: 'Unauthorized: Only admins can create supervisors' },
 		};
+	}
+
+	const adminCompanyId = admin.company || admin.companyId;
+	if (!adminCompanyId) {
+		return { status: 400, body: { success: false, message: 'Admin is not linked to a company' } };
 	}
 
 	const normalizedUsername = username.toLowerCase().trim();
@@ -242,22 +275,28 @@ async function createSupervisor(req, { username, password, adminId, firstName, l
 		firstName: supervisorFirstName,
 		lastName: supervisorLastName,
 		fullName: `${supervisorFirstName} ${supervisorLastName}`,
-		createdBy: adminId,
-		companyId: admin.companyId || admin._id,
-		company: admin.companyId || admin._id,
+		createdBy: admin._id,
+		companyId: adminCompanyId,
+		company: adminCompanyId,
 		sites: [],
 	});
 	await supervisor.save();
 
 	await safeActivityLog(req, supervisor._id, 'supervisor_created', admin, {
 		supervisorUsername: supervisor.username,
-		createdBy: adminId,
+		createdBy: admin._id,
 	}, `Supervisor "${supervisor.username}" created by admin`, 'User');
 
 	const io = req.app.get('io');
 	if (io) {
 		io.emit('supervisors:updated', { action: 'create', supervisorId: supervisor._id });
 	}
+
+	await Promise.all([
+		cacheService.invalidatePattern(`supervisors:admin:${admin._id}:*`),
+		cacheService.invalidatePattern(`supervisors:company:${adminCompanyId}:*`),
+		cacheService.del(`user:${supervisor._id}`),
+	]);
 
 	return {
 		status: 201,
@@ -273,7 +312,8 @@ async function createSupervisor(req, { username, password, adminId, firstName, l
 	};
 }
 
-async function getSupervisors(adminId) {
+async function getSupervisors(params) {
+	const { id: adminId, page, limit, selectedFields } = normalizeListArgs(params, 'adminId');
 	if (!adminId) {
 		return { status: 400, body: { success: false, message: 'Admin ID is required' } };
 	}
@@ -285,20 +325,51 @@ async function getSupervisors(adminId) {
 		query = { role: 'supervisor', companyId: admin.companyId };
 	}
 
-	const supervisors = await User.find(query)
-		.select('username _id assignedSites')
-		.populate('assignedSites', 'siteName');
+	const { skip, page: safePage, limit: safeLimit } = PaginationHelper.normalize({ page, limit });
+	const projection = resolveProjection('username _id assignedSites', selectedFields);
+	const cacheScope = admin && admin.companyId ? `company:${admin.companyId}` : `admin:${adminId}`;
+	const cacheKey = `supervisors:${cacheScope}:p:${safePage}:l:${safeLimit}:f:${projection}`;
+	const result = await cacheService.wrap(cacheKey, async () => {
+		const [supervisors, total] = await Promise.all([
+			User.find(query)
+				.select(projection)
+				.populate('assignedSites', 'siteName')
+				.skip(skip)
+				.limit(safeLimit)
+				.lean(),
+			User.countDocuments(query),
+		]);
+
+		return {
+			count: supervisors.length,
+			pagination: PaginationHelper.buildMeta(safePage, safeLimit, total),
+			data: supervisors,
+		};
+	}, 300);
 
 	return {
 		status: 200,
-		body: { success: true, count: supervisors.length, data: supervisors },
+		body: {
+			success: true,
+			...result,
+		},
 	};
 }
 
-async function getSupervisorById(supervisorId) {
-	const supervisor = await User.findById(supervisorId)
-		.populate('assignedSites', 'siteName location')
-		.populate('companyId', 'name');
+async function getSupervisorById(supervisorId, selectedFields) {
+	const projection = resolveProjection(undefined, selectedFields);
+	const cacheKey = `supervisor:${supervisorId}:f:${projection || 'default'}`;
+	const supervisor = await cacheService.wrap(cacheKey, async () => {
+		let query = User.findById(supervisorId)
+			.populate('assignedSites', 'siteName location')
+			.populate('companyId', 'name');
+
+		if (projection) {
+			query = query.select(projection);
+		}
+
+		return query.lean();
+	}, 300);
 
 	if (!supervisor || supervisor.role !== 'supervisor') {
 		return { status: 404, body: { success: false, message: 'Supervisor not found' } };
@@ -307,20 +378,25 @@ async function getSupervisorById(supervisorId) {
 	return { status: 200, body: { success: true, data: supervisor } };
 }
 
-async function createWarehouseManager(req, { username, password, adminId, firstName, lastName }) {
-	if (!username || !password || !adminId || !firstName || !lastName) {
+async function createWarehouseManager(req, { username, password, firstName, lastName }) {
+	if (!username || !password || !firstName || !lastName) {
 		return {
 			status: 400,
-			body: { success: false, message: 'Username, password, adminId, first name, and last name are required' },
+			body: { success: false, message: 'Username, password, first name, and last name are required' },
 		};
 	}
 
-	const admin = await User.findOne({ _id: adminId, role: { $in: ['admin', 'company_owner'] } });
+	const admin = await User.findOne({ _id: req.user?._id, role: { $in: ['admin', 'company_owner'] } });
 	if (!admin) {
 		return {
 			status: 403,
 			body: { success: false, message: 'Unauthorized: Only admins can create warehouse managers' },
 		};
+	}
+
+	const adminCompanyId = admin.company || admin.companyId;
+	if (!adminCompanyId) {
+		return { status: 400, body: { success: false, message: 'Admin is not linked to a company' } };
 	}
 
 	const normalizedUsername = username.toLowerCase().trim();
@@ -338,22 +414,28 @@ async function createWarehouseManager(req, { username, password, adminId, firstN
 		firstName: managerFirstName,
 		lastName: managerLastName,
 		fullName: `${managerFirstName} ${managerLastName}`,
-		createdBy: adminId,
-		companyId: admin.companyId || admin._id,
-		company: admin.companyId || admin._id,
+		createdBy: admin._id,
+		companyId: adminCompanyId,
+		company: adminCompanyId,
 		assignedWarehouses: [],
 	});
 	await warehouseManager.save();
 
 	await safeActivityLog(req, warehouseManager._id, 'warehouse_manager_created', admin, {
 		managerUsername: warehouseManager.username,
-		createdBy: adminId,
+		createdBy: admin._id,
 	}, `Warehouse manager "${warehouseManager.username}" created by admin`, 'User');
 
 	const io = req.app.get('io');
 	if (io) {
 		io.emit('warehouse-managers:updated', { action: 'create', managerId: warehouseManager._id });
 	}
+
+	await Promise.all([
+		cacheService.invalidatePattern(`warehouseManagers:admin:${admin._id}:*`),
+		cacheService.invalidatePattern(`warehouseManagers:company:${adminCompanyId}:*`),
+		cacheService.del(`user:${warehouseManager._id}`),
+	]);
 
 	return {
 		status: 201,
@@ -369,7 +451,8 @@ async function createWarehouseManager(req, { username, password, adminId, firstN
 	};
 }
 
-async function getWarehouseManagers(adminId) {
+async function getWarehouseManagers(params) {
+	const { id: adminId, page, limit, selectedFields } = normalizeListArgs(params, 'adminId');
 	if (!adminId) {
 		return { status: 400, body: { success: false, message: 'Admin ID is required' } };
 	}
@@ -381,13 +464,34 @@ async function getWarehouseManagers(adminId) {
 		query = { role: 'warehouse_manager', companyId: admin.companyId };
 	}
 
-	const managers = await User.find(query)
-		.select('username _id assignedWarehouses fullName')
-		.populate('assignedWarehouses', 'warehouseName');
+	const { skip, page: safePage, limit: safeLimit } = PaginationHelper.normalize({ page, limit });
+	const projection = resolveProjection('username _id assignedWarehouses fullName', selectedFields);
+	const cacheScope = admin && admin.companyId ? `company:${admin.companyId}` : `admin:${adminId}`;
+	const cacheKey = `warehouseManagers:${cacheScope}:p:${safePage}:l:${safeLimit}:f:${projection}`;
+	const result = await cacheService.wrap(cacheKey, async () => {
+		const [managers, total] = await Promise.all([
+			User.find(query)
+				.select(projection)
+				.populate('assignedWarehouses', 'warehouseName')
+				.skip(skip)
+				.limit(safeLimit)
+				.lean(),
+			User.countDocuments(query),
+		]);
+
+		return {
+			count: managers.length,
+			pagination: PaginationHelper.buildMeta(safePage, safeLimit, total),
+			data: managers,
+		};
+	}, 300);
 
 	return {
 		status: 200,
-		body: { success: true, count: managers.length, data: managers },
+		body: {
+			success: true,
+			...result,
+		},
 	};
 }
 
@@ -430,10 +534,18 @@ async function deleteWarehouseManager(req, { adminId, managerId }) {
 		io.emit('warehouse-managers:updated', { action: 'delete', managerId });
 	}
 
+	const adminCompanyId = admin.company || admin.companyId;
+	await Promise.all([
+		cacheService.invalidatePattern(`warehouseManagers:admin:${adminId}:*`),
+		cacheService.invalidatePattern(`warehouseManagers:company:${adminCompanyId}:*`),
+		cacheService.del(`user:${managerId}`),
+	]);
+
 	return { status: 200, body: { success: true, message: 'Warehouse manager deleted successfully' } };
 }
 
-async function getAdmins(adminId) {
+async function getAdmins(params) {
+	const { id: adminId, page, limit, selectedFields } = normalizeListArgs(params, 'adminId');
 	if (!adminId) {
 		return { status: 400, body: { success: false, message: 'Admin ID is required' } };
 	}
@@ -448,11 +560,35 @@ async function getAdmins(adminId) {
 		query.companyId = requestor.companyId;
 	}
 
-	const admins = await User.find(query)
-		.select('username _id firstName lastName fullName role')
-		.sort({ firstName: 1 });
+	const { skip, page: safePage, limit: safeLimit } = PaginationHelper.normalize({ page, limit });
+	const projection = resolveProjection('username _id firstName lastName fullName role', selectedFields);
+	const cacheScope = requestor.companyId ? `company:${requestor.companyId}` : `all`;
+	const cacheKey = `admins:${cacheScope}:p:${safePage}:l:${safeLimit}:f:${projection}`;
+	const result = await cacheService.wrap(cacheKey, async () => {
+		const [admins, total] = await Promise.all([
+			User.find(query)
+				.select(projection)
+				.sort({ firstName: 1 })
+				.skip(skip)
+				.limit(safeLimit)
+				.lean(),
+			User.countDocuments(query),
+		]);
 
-	return { status: 200, body: { success: true, count: admins.length, data: admins } };
+		return {
+			count: admins.length,
+			pagination: PaginationHelper.buildMeta(safePage, safeLimit, total),
+			data: admins,
+		};
+	}, 300);
+
+	return {
+		status: 200,
+		body: {
+			success: true,
+			...result,
+		},
+	};
 }
 
 const companyService = require('../company/company.service');
@@ -550,6 +686,13 @@ async function deleteSupervisor(req, { id, adminId }) {
 	if (io) {
 		io.emit('supervisors:updated', { action: 'delete', supervisorId: id });
 	}
+
+	await Promise.all([
+		cacheService.invalidatePattern(`supervisors:admin:${adminId}:*`),
+		cacheService.invalidatePattern(`supervisors:company:${companyId}:*`),
+		cacheService.invalidatePattern(`supervisor:${id}:f:*`),
+		cacheService.del(`user:${id}`),
+	]);
 
 	return { status: 200, body: { success: true, message: 'Supervisor deleted successfully' } };
 }
@@ -736,6 +879,7 @@ async function changePassword(req, { userId, oldPassword, newPassword }) {
 
 	user.password = newPassword;
 	await user.save();
+	await cacheService.del(`user:${user._id}`);
 
 	await safeActivityLog(req, user._id, 'password_changed', req.user || user, {}, `Password changed for user "${user.username}"`, 'User');
 

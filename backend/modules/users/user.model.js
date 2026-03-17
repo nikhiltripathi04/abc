@@ -226,6 +226,11 @@ const userSchema = new Schema({
 
 userSchema.index({ company: 1, role: 1 });
 userSchema.index({ username: 1, company: 1 });
+userSchema.index({ company: 1, role: 1, isActive: 1 });
+userSchema.index({ email: 1, isActive: 1 });
+userSchema.index({ username: 1, isActive: 1 });
+userSchema.index({ createdBy: 1, role: 1 });
+userSchema.index({ firstName: 'text', lastName: 'text', email: 'text', username: 'text' });
 
 /*
 |--------------------------------------------------------------------------
