@@ -192,12 +192,13 @@ async function login(payload = {}) {
 			extraData.assignedSites = user.sites;
 		}
 
-		if (user.companyId) {
+		const userCompanyId = user.companyId || user.company;
+		if (userCompanyId) {
+			extraData.companyId = userCompanyId;
 			const Company = safeGetModel('Company');
 			if (Company) {
-				const company = await Company.findById(user.companyId);
+				const company = await Company.findById(userCompanyId);
 				if (company) {
-					extraData.companyId = company._id;
 					extraData.companyName = company.name;
 				}
 			}

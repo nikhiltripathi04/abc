@@ -2,6 +2,22 @@ const ApiResponse = require('../utils/response.util');
 const logger = require('../utils/logger');
 
 const errorHandler = (err, req, res, next) => {
+  if (err.isOperational) {
+    logger.warn('Request validation/operation error', {
+      message: err.message,
+      code: err.code,
+      statusCode: err.statusCode,
+      path: req.originalUrl,
+      method: req.method,
+      ip: req.ip,
+      fields: err.fields,
+    });
+
+    return res.status(err.statusCode).json(
+      ApiResponse.error(err.message, err.code, err.statusCode, err.fields)
+    );
+  }
+
   logger.error('Unhandled request error', {
     message: err.message,
     stack: err.stack,
@@ -9,12 +25,6 @@ const errorHandler = (err, req, res, next) => {
     method: req.method,
     ip: req.ip,
   });
-
-  if (err.isOperational) {
-    return res.status(err.statusCode).json(
-      ApiResponse.error(err.message, err.code, err.statusCode, err.fields)
-    );
-  }
 
   if (err.name === 'ValidationError') {
     const fields = Object.keys(err.errors).map((key) => ({

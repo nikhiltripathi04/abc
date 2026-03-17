@@ -1,6 +1,25 @@
 const Joi = require('joi');
 const { ValidationError } = require('../utils/errors');
 
+const normalizeJoiMessage = (message) => String(message || '').replace(/\"/g, '');
+
+const formatValidationDetails = (details = []) => details.map((detail) => ({
+  field: detail.path.join('.') || 'body',
+  message: normalizeJoiMessage(detail.message),
+  type: detail.type,
+}));
+
+const buildValidationSummary = (details = [], scope = 'request') => {
+  if (!details.length) {
+    return `Invalid ${scope}`;
+  }
+
+  const first = details[0];
+  const field = first.path.join('.') || scope;
+  const message = normalizeJoiMessage(first.message);
+  return `Invalid ${scope}: ${field} ${message.replace(new RegExp(`^${field}\\s*`, 'i'), '')}`.trim();
+};
+
 const validateBody = (schema) => (req, res, next) => {
   if (typeof req.body === 'string') {
     try {
@@ -19,11 +38,8 @@ const validateBody = (schema) => (req, res, next) => {
   });
 
   if (error) {
-    return next(new ValidationError('Invalid request body', error.details.map((detail) => ({
-      field: detail.path.join('.'),
-      message: detail.message,
-      type: detail.type,
-    }))));
+    const fields = formatValidationDetails(error.details);
+    return next(new ValidationError(buildValidationSummary(error.details, 'request body'), fields));
   }
 
   req.body = value;
@@ -38,11 +54,8 @@ const validateQuery = (schema) => (req, res, next) => {
   });
 
   if (error) {
-    return next(new ValidationError('Invalid query params', error.details.map((detail) => ({
-      field: detail.path.join('.'),
-      message: detail.message,
-      type: detail.type,
-    }))));
+    const fields = formatValidationDetails(error.details);
+    return next(new ValidationError(buildValidationSummary(error.details, 'query params'), fields));
   }
 
   req.query = value;
@@ -56,11 +69,8 @@ const validateParams = (schema) => (req, res, next) => {
   });
 
   if (error) {
-    return next(new ValidationError('Invalid route params', error.details.map((detail) => ({
-      field: detail.path.join('.'),
-      message: detail.message,
-      type: detail.type,
-    }))));
+    const fields = formatValidationDetails(error.details);
+    return next(new ValidationError(buildValidationSummary(error.details, 'route params'), fields));
   }
 
   req.params = value;
